@@ -1,0 +1,10 @@
+# Your Dispatch Partner
+# This file expresses crawl preferences only. It is not a security control.
+
+User-agent: *
+Disallow: /customer-portal/
+Disallow: /admin/
+Disallow: /demo-private/
+
+# Public marketing pages remain crawlable.
+Allow: /

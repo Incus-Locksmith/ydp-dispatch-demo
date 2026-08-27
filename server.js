@@ -239,8 +239,14 @@ function clearSessionCookie(res) {
 }
 
 function requireLogin(req, res, next) {
-  const openPaths = ["/login", "/logout", "/webhook/yay"];
-  if (openPaths.includes(req.path) || req.path.startsWith("/tech-checkin/") || req.path === "/tech-workspace" || req.path.startsWith("/tech-workspace/")) return next();
+  const openPaths = ["/login", "/logout", "/webhook/yay", "/rachel"];
+  if (
+    openPaths.includes(req.path) ||
+    req.path.startsWith("/rachel/") ||
+    req.path.startsWith("/tech-checkin/") ||
+    req.path === "/tech-workspace" ||
+    req.path.startsWith("/tech-workspace/")
+  ) return next();
 
   const session = readSession(req);
   if (!session) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
@@ -254,6 +260,71 @@ app.use(requireLogin);
 function currentAgentName(req) {
   return req.currentAgent || "";
 }
+
+function ydpCardConfig() {
+  return {
+    name: String(process.env.YDP_CARD_NAME || "Rachel Neal").trim(),
+    title: String(process.env.YDP_CARD_TITLE || "Founder").trim(),
+    company: "Your Dispatch Partner",
+    email: String(process.env.YDP_CARD_EMAIL || "").trim(),
+    phone: String(process.env.YDP_CARD_PHONE || "").trim(),
+    website: String(process.env.YDP_CARD_WEBSITE || "https://yourdispatchpartner.com").trim(),
+    linkedin: String(process.env.YDP_CARD_LINKEDIN_URL || "https://www.linkedin.com/in/rachelsharkey/").trim(),
+    demoUrl: String(process.env.YDP_CARD_DEMO_URL || "https://yourdispatchpartner.com/features.html").trim(),
+    bookUrl: String(process.env.YDP_CARD_BOOK_URL || "https://yourdispatchpartner.com/#contact").trim(),
+    photoUrl: String(process.env.YDP_CARD_PHOTO_URL || "").trim()
+  };
+}
+
+function cleanCardSource(value) {
+  const clean = String(value || "direct").toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 40);
+  return clean || "direct";
+}
+
+function cleanCardInterest(value) {
+  const allowed = ["full_dispatch", "booking_management", "business_visibility", "not_sure"];
+  const clean = String(value || "").trim();
+  return allowed.includes(clean) ? clean : "";
+}
+
+function ydpCardInterestLabel(value) {
+  const labels = {
+    full_dispatch: "Full dispatch",
+    booking_management: "Booking / appointment management",
+    business_visibility: "Better business visibility",
+    not_sure: "Not sure yet"
+  };
+  return labels[value] || "Not selected";
+}
+
+function ydpCardPublicUrl(req, source = "direct") {
+  const configured = String(process.env.YDP_CARD_PUBLIC_URL || "").trim().replace(/\/+$/, "");
+  const base = configured || `${req.protocol}://${req.get("host")}/rachel`;
+  const separator = base.includes("?") ? "&" : "?";
+  return `${base}${separator}source=${encodeURIComponent(cleanCardSource(source))}`;
+}
+
+async function trackYdpCardEvent(req, eventType, extras = {}) {
+  try {
+    await pool.query(`
+      INSERT INTO ydp_card_events (event_type, source, interest, detail, referrer, created_at)
+      VALUES ($1, $2, $3, $4, $5, NOW())
+    `, [
+      String(eventType || "event").slice(0, 80),
+      cleanCardSource(extras.source || req.query.source || req.body?.source),
+      cleanCardInterest(extras.interest || req.query.interest || req.body?.interest) || null,
+      String(extras.detail || "").slice(0, 500) || null,
+      String(req.get("referer") || "").slice(0, 500) || null
+    ]);
+  } catch (error) {
+    console.error("YDP card event tracking error:", error);
+  }
+}
+
+function ydpCardActionUrl(action, source = "direct") {
+  return `/rachel/go/${encodeURIComponent(action)}?source=${encodeURIComponent(cleanCardSource(source))}`;
+}
+
 
 async function getActivePortalUsers() {
   const result = await pool.query(`
@@ -2747,6 +2818,7 @@ function nav(req) {
         <div class="sidebar-label section-label">Admin</div>
         <a class="side-link${active("/admin")}" href="/admin/users"><span class="side-dot dot-red"></span><span>Admin Manager</span></a>
         <a class="side-link${active("/admin/yay-caller-ids")}" href="/admin/yay-caller-ids"><span class="side-dot dot-blue"></span><span>Yay SMS setup</span></a>
+        <a class="side-link${active("/admin/ydp-leads")}" href="/admin/ydp-leads"><span class="side-dot dot-green"></span><span>YDP Card Leads</span></a>
       </nav>
 
       <div class="sidebar-user">
@@ -3560,6 +3632,53 @@ async function initDb() {
   await pool.query(`CREATE INDEX IF NOT EXISTS opportunities_created_at_idx ON opportunities (created_at);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS opportunities_campaign_idx ON opportunities (source_campaign);`);
 
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ydp_card_leads (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      business_name TEXT,
+      email TEXT,
+      phone TEXT,
+      interest TEXT,
+      source TEXT DEFAULT 'direct',
+      notes TEXT,
+      consent_follow_up BOOLEAN DEFAULT FALSE,
+      status TEXT DEFAULT 'new',
+      admin_notes TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`ALTER TABLE ydp_card_leads ADD COLUMN IF NOT EXISTS business_name TEXT;`);
+  await pool.query(`ALTER TABLE ydp_card_leads ADD COLUMN IF NOT EXISTS email TEXT;`);
+  await pool.query(`ALTER TABLE ydp_card_leads ADD COLUMN IF NOT EXISTS phone TEXT;`);
+  await pool.query(`ALTER TABLE ydp_card_leads ADD COLUMN IF NOT EXISTS interest TEXT;`);
+  await pool.query(`ALTER TABLE ydp_card_leads ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'direct';`);
+  await pool.query(`ALTER TABLE ydp_card_leads ADD COLUMN IF NOT EXISTS notes TEXT;`);
+  await pool.query(`ALTER TABLE ydp_card_leads ADD COLUMN IF NOT EXISTS consent_follow_up BOOLEAN DEFAULT FALSE;`);
+  await pool.query(`ALTER TABLE ydp_card_leads ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'new';`);
+  await pool.query(`ALTER TABLE ydp_card_leads ADD COLUMN IF NOT EXISTS admin_notes TEXT;`);
+  await pool.query(`ALTER TABLE ydp_card_leads ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS ydp_card_leads_created_idx ON ydp_card_leads (created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS ydp_card_leads_source_idx ON ydp_card_leads (source, created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS ydp_card_leads_status_idx ON ydp_card_leads (status, created_at DESC);`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ydp_card_events (
+      id SERIAL PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      source TEXT DEFAULT 'direct',
+      interest TEXT,
+      detail TEXT,
+      referrer TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS ydp_card_events_created_idx ON ydp_card_events (created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS ydp_card_events_source_idx ON ydp_card_events (source, created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS ydp_card_events_type_idx ON ydp_card_events (event_type, created_at DESC);`);
+
   await seedDefaultPortalUsers();
   await seedDefaultInvoiceItems();
   await seedDefaultInvoiceTemplates();
@@ -3568,6 +3687,540 @@ async function initDb() {
 
 /* The rest of this file keeps all your current working routes and adds the invoice upgrade.
    Because this response needs to be copied safely, the complete route set continues below. */
+
+
+app.get("/rachel", async (req, res) => {
+  const cfg = ydpCardConfig();
+  const source = cleanCardSource(req.query.source);
+  const selectedInterest = cleanCardInterest(req.query.interest);
+  const thanks = req.query.thanks === "1";
+
+  await trackYdpCardEvent(req, "page_view", { source, interest: selectedInterest });
+
+  const initials = cfg.name.split(/\s+/).filter(Boolean).map(part => part[0]).slice(0, 2).join("").toUpperCase() || "RN";
+  const profileVisual = cfg.photoUrl
+    ? `<img class="profile-photo" src="${escapeHtml(cfg.photoUrl)}" alt="${escapeHtml(cfg.name)}" onerror="this.style.display='none';this.nextElementSibling.style.display='grid';"><div class="profile-fallback" style="display:none;">${escapeHtml(initials)}</div>`
+    : `<div class="profile-fallback">${escapeHtml(initials)}</div>`;
+
+  const contactRows = [
+    cfg.email ? `<a href="mailto:${escapeHtml(cfg.email)}"><span class="contact-icon red">✉</span><span>${escapeHtml(cfg.email)}</span></a>` : "",
+    cfg.phone ? `<a href="tel:${escapeHtml(compactPhone(cfg.phone))}"><span class="contact-icon green">☎</span><span>${escapeHtml(cfg.phone)}</span></a>` : "",
+    cfg.website ? `<a href="${escapeHtml(ydpCardActionUrl("website", source))}"><span class="contact-icon amber">◎</span><span>${escapeHtml(cfg.website.replace(/^https?:\/\//, "").replace(/\/+$/, ""))}</span></a>` : "",
+    cfg.linkedin ? `<a href="${escapeHtml(ydpCardActionUrl("linkedin", source))}"><span class="contact-icon blue">in</span><span>LinkedIn</span></a>` : ""
+  ].filter(Boolean).join("");
+
+  const interestButton = (value, title, subtitle, tone) => `
+    <button type="button" class="interest-button ${tone}" data-interest="${escapeHtml(value)}">
+      <span class="interest-check">✓</span>
+      <strong>${escapeHtml(title)}</strong>
+      <small>${escapeHtml(subtitle)}</small>
+    </button>
+  `;
+
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+      <meta name="theme-color" content="#111417">
+      <meta name="description" content="Connect with Rachel Neal, Founder of Your Dispatch Partner.">
+      <title>${escapeHtml(cfg.name)} · Your Dispatch Partner</title>
+      <style>
+        :root {
+          --red:#ef3123;
+          --yellow:#f5c400;
+          --green:#41b61d;
+          --charcoal:#111417;
+          --panel:#1a1f23;
+          --panel2:#22282d;
+          --line:#343c42;
+          --text:#f7f8f9;
+          --muted:#aab3ba;
+        }
+        * { box-sizing:border-box; }
+        html { background:#0b0d0f; }
+        body {
+          margin:0;
+          min-height:100vh;
+          font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          color:var(--text);
+          background:
+            radial-gradient(circle at 10% 0%, rgba(239,49,35,.17), transparent 27%),
+            radial-gradient(circle at 95% 20%, rgba(65,182,29,.12), transparent 22%),
+            linear-gradient(180deg,#15191c 0%,#0b0d0f 100%);
+        }
+        a { color:inherit; text-decoration:none; }
+        button,input,textarea { font:inherit; }
+        .card-shell {
+          width:min(100%, 520px);
+          margin:0 auto;
+          padding:22px 16px 42px;
+        }
+        .brand-row { display:flex; align-items:center; gap:12px; margin:2px 0 18px; }
+        .brand-row img { width:62px; height:62px; object-fit:contain; }
+        .brand-name { font-weight:900; font-size:21px; letter-spacing:.02em; }
+        .brand-sub { color:var(--muted); font-size:11px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; margin-top:2px; }
+        .hero {
+          position:relative;
+          overflow:hidden;
+          background:linear-gradient(155deg,#20262a 0%,#14181b 100%);
+          border:1px solid rgba(255,255,255,.08);
+          border-radius:28px;
+          padding:24px;
+          box-shadow:0 30px 70px rgba(0,0,0,.34);
+        }
+        .hero::after {
+          content:"";
+          position:absolute;
+          width:210px;
+          height:210px;
+          border:24px solid rgba(245,196,0,.10);
+          border-radius:50%;
+          right:-130px;
+          top:-88px;
+        }
+        .strap { font-size:clamp(31px,8vw,44px); line-height:1.02; letter-spacing:-.045em; font-weight:500; margin:4px 0 18px; }
+        .strap .work { color:var(--red); }
+        .strap .team { color:var(--yellow); }
+        .strap .business { color:var(--green); }
+        .intro { color:#d6dadd; font-size:15px; line-height:1.55; margin:0; max-width:390px; }
+        .profile-card {
+          margin-top:20px;
+          padding:17px;
+          background:rgba(255,255,255,.035);
+          border:1px solid rgba(255,255,255,.10);
+          border-radius:22px;
+        }
+        .profile-head { display:flex; align-items:center; gap:14px; margin-bottom:16px; }
+        .profile-photo,.profile-fallback {
+          width:76px; height:76px; border-radius:50%; flex:0 0 auto;
+          border:3px solid rgba(255,255,255,.13);
+        }
+        .profile-photo { object-fit:cover; }
+        .profile-fallback {
+          display:grid; place-items:center;
+          background:linear-gradient(145deg,var(--red),#a61f18);
+          font-size:25px; font-weight:900;
+        }
+        .profile-name { font-size:25px; font-weight:900; letter-spacing:-.025em; }
+        .profile-title { color:#d8dde0; font-size:14px; margin-top:2px; }
+        .contact-list { display:grid; overflow:hidden; border:1px solid var(--line); border-radius:16px; }
+        .contact-list a { display:flex; align-items:center; gap:11px; min-height:49px; padding:10px 12px; border-bottom:1px solid var(--line); color:#edf0f2; font-size:14px; }
+        .contact-list a:last-child { border-bottom:0; }
+        .contact-icon { width:27px; height:27px; border-radius:9px; display:grid; place-items:center; font-weight:900; color:#fff; font-size:12px; }
+        .contact-icon.red { background:var(--red); }
+        .contact-icon.green { background:var(--green); color:#10200d; }
+        .contact-icon.amber { background:var(--yellow); color:#1c1c0b; }
+        .contact-icon.blue { background:#0a66c2; }
+        .action-grid { display:grid; gap:9px; margin-top:13px; }
+        .action {
+          min-height:52px; border-radius:15px; display:flex; align-items:center; justify-content:center; gap:9px;
+          border:1px solid var(--line); background:#1d2226; font-weight:850; font-size:14px;
+        }
+        .action.primary { background:linear-gradient(135deg,#ef3123,#c9261d); border-color:#f1574b; }
+        .action.secondary { background:#20262a; }
+        .action:hover { filter:brightness(1.08); }
+        .interest-panel,.lead-panel,.qr-panel {
+          margin-top:16px; background:#15191c; border:1px solid rgba(255,255,255,.08); border-radius:24px; padding:20px;
+        }
+        .section-kicker { color:var(--yellow); font-size:11px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; }
+        .section-title { font-size:21px; font-weight:900; margin:5px 0 5px; letter-spacing:-.025em; }
+        .section-sub { color:var(--muted); font-size:13px; line-height:1.45; margin:0 0 14px; }
+        .interest-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+        .interest-button {
+          min-height:116px; padding:12px 8px; border:1px solid var(--line); border-radius:16px;
+          background:#1d2226; color:#fff; cursor:pointer; text-align:left; position:relative;
+        }
+        .interest-button strong { display:block; font-size:13px; line-height:1.2; margin-top:22px; }
+        .interest-button small { display:block; color:var(--muted); font-size:10px; line-height:1.25; margin-top:5px; }
+        .interest-check { position:absolute; top:10px; right:10px; width:20px; height:20px; border-radius:50%; display:none; place-items:center; font-size:11px; font-weight:900; }
+        .interest-button.red .interest-check { background:var(--red); }
+        .interest-button.yellow .interest-check { background:var(--yellow); color:#17170b; }
+        .interest-button.green .interest-check { background:var(--green); color:#10200d; }
+        .interest-button.selected { border-color:#eef1f3; box-shadow:0 0 0 1px rgba(255,255,255,.45) inset; }
+        .interest-button.selected .interest-check { display:grid; }
+        .form-grid { display:grid; gap:10px; }
+        .field label { display:block; color:#c8d0d5; font-size:11px; font-weight:850; margin:0 0 5px; }
+        .field input,.field textarea {
+          width:100%; border:1px solid var(--line); background:#20262a; color:#fff; border-radius:13px; padding:12px;
+          outline:none; min-height:46px;
+        }
+        .field input:focus,.field textarea:focus { border-color:var(--yellow); box-shadow:0 0 0 3px rgba(245,196,0,.10); }
+        .field textarea { min-height:82px; resize:vertical; }
+        .consent { display:flex; gap:9px; align-items:flex-start; color:#c8d0d5; font-size:11px; line-height:1.35; }
+        .consent input { width:18px; height:18px; margin:0; flex:0 0 auto; }
+        .submit {
+          min-height:52px; border:0; border-radius:14px; background:linear-gradient(135deg,var(--green),#2d9215);
+          color:#071006; font-weight:950; cursor:pointer;
+        }
+        .thanks { margin:0 0 14px; padding:12px 14px; border-radius:14px; background:rgba(65,182,29,.14); border:1px solid rgba(65,182,29,.34); color:#c8f4b8; font-size:13px; line-height:1.45; }
+        .qr-wrap { background:#fff; padding:12px; border-radius:18px; width:min(230px,100%); margin:14px auto; }
+        .qr-wrap img { display:block; width:100%; aspect-ratio:1; object-fit:contain; }
+        .qr-actions { display:flex; justify-content:center; gap:8px; flex-wrap:wrap; }
+        .mini-link { display:inline-flex; align-items:center; justify-content:center; min-height:38px; padding:8px 12px; border:1px solid var(--line); border-radius:12px; color:#e8ecee; font-size:12px; font-weight:850; }
+        .footer-note { color:#6f7a81; font-size:10px; text-align:center; line-height:1.45; margin:17px 0 0; }
+        @media(max-width:390px){
+          .card-shell { padding-left:10px; padding-right:10px; }
+          .hero { padding:20px; border-radius:23px; }
+          .interest-grid { grid-template-columns:1fr; }
+          .interest-button { min-height:76px; }
+          .interest-button strong { margin-top:4px; padding-right:28px; }
+        }
+      </style>
+    </head>
+    <body>
+      <main class="card-shell">
+        <div class="brand-row">
+          <img src="/brand-logo.png" alt="YDP" onerror="this.style.display='none';">
+          <div>
+            <div class="brand-name">YDP</div>
+            <div class="brand-sub">Your Dispatch Partner</div>
+          </div>
+        </div>
+
+        <section class="hero">
+          <h1 class="strap">Run the <span class="work">work.</span><br>Run the <span class="team">team.</span><br>Run the <span class="business">business.</span></h1>
+          <p class="intro">Bookings, jobs, teams, customers and finance — connected in one place.</p>
+
+          <div class="profile-card">
+            <div class="profile-head">
+              ${profileVisual}
+              <div>
+                <div class="profile-name">${escapeHtml(cfg.name)}</div>
+                <div class="profile-title">${escapeHtml(cfg.title)} · ${escapeHtml(cfg.company)}</div>
+              </div>
+            </div>
+
+            ${contactRows ? `<div class="contact-list">${contactRows}</div>` : ""}
+
+            <div class="action-grid">
+              <a class="action primary" href="/rachel/contact.vcf?source=${encodeURIComponent(source)}">⇩ Save contact</a>
+              <a class="action secondary" href="${escapeHtml(ydpCardActionUrl("demo", source))}">▶ See YDP in action</a>
+              <a class="action secondary" href="${escapeHtml(ydpCardActionUrl("book", source))}">▣ Book a demo</a>
+              <button class="action secondary" id="share-card" type="button">↗ Share this card</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="interest-panel" id="interests">
+          <div class="section-kicker">What are you looking for?</div>
+          <div class="section-title">Start with what your business needs.</div>
+          <p class="section-sub">YDP can scale from booking management to a full dispatch and operations system.</p>
+          <div class="interest-grid">
+            ${interestButton("full_dispatch","Full dispatch","Jobs, field teams & live operations","red")}
+            ${interestButton("booking_management","Booking management","Appointments, diaries & customers","yellow")}
+            ${interestButton("business_visibility","Better visibility","See the heartbeat of the business","green")}
+          </div>
+        </section>
+
+        <section class="lead-panel" id="connect">
+          <div class="section-kicker">Connect</div>
+          <div class="section-title">Want to see YDP for your business?</div>
+          <p class="section-sub">Leave your details and Rachel can pick the conversation up with you.</p>
+          ${thanks ? `<div class="thanks"><strong>Thank you.</strong> Your details have been saved and Rachel can follow up with you.</div>` : ""}
+          <form method="POST" action="/rachel/lead" class="form-grid">
+            <input type="hidden" name="source" value="${escapeHtml(source)}">
+            <input type="hidden" name="interest" id="interest-value" value="${escapeHtml(selectedInterest)}">
+            <div class="field"><label>Your name</label><input name="name" autocomplete="name" required></div>
+            <div class="field"><label>Business</label><input name="business_name" autocomplete="organization" required></div>
+            <div class="field"><label>Email</label><input type="email" name="email" autocomplete="email"></div>
+            <div class="field"><label>Phone</label><input name="phone" autocomplete="tel"></div>
+            <div class="field"><label>Anything useful to know?</label><textarea name="notes" maxlength="1000" placeholder="Optional"></textarea></div>
+            <label class="consent"><input type="checkbox" name="consent_follow_up" value="1" required><span>Yes, YDP may contact me about my enquiry. My details will only be used to respond to this request.</span></label>
+            <button class="submit" type="submit">Send my details</button>
+          </form>
+        </section>
+
+        <section class="qr-panel">
+          <div class="section-kicker">Share YDP</div>
+          <div class="section-title">Scan to connect instantly.</div>
+          <p class="section-sub">This is the same QR route you can use on the badge or printed business card.</p>
+          <div class="qr-wrap"><img src="/rachel/qr.png?source=${encodeURIComponent(source === "direct" ? "share" : source)}" alt="QR code for Rachel's YDP digital card"></div>
+          <div class="qr-actions">
+            <a class="mini-link" href="/rachel/qr.png?source=badge" target="_blank">Badge QR</a>
+            <a class="mini-link" href="/rachel/qr.png?source=businesscard" target="_blank">Business card QR</a>
+          </div>
+        </section>
+
+        <p class="footer-note">Your Dispatch Partner · One connected system for service businesses.</p>
+      </main>
+
+      <script>
+        (() => {
+          const source = ${JSON.stringify(source)};
+          const selected = ${JSON.stringify(selectedInterest)};
+          const hidden = document.getElementById("interest-value");
+          const buttons = [...document.querySelectorAll(".interest-button")];
+
+          function chooseInterest(value, shouldScroll = true) {
+            hidden.value = value;
+            buttons.forEach(button => button.classList.toggle("selected", button.dataset.interest === value));
+            try {
+              navigator.sendBeacon("/rachel/event", new Blob([JSON.stringify({ event_type:"interest_selected", source, interest:value })], {type:"application/json"}));
+            } catch (_) {}
+            if (shouldScroll) document.getElementById("connect").scrollIntoView({ behavior:"smooth", block:"start" });
+          }
+
+          buttons.forEach(button => button.addEventListener("click", () => chooseInterest(button.dataset.interest, true)));
+          if (selected) chooseInterest(selected, false);
+
+          document.getElementById("share-card").addEventListener("click", async () => {
+            const shareData = { title:"Your Dispatch Partner", text:"Connect with Rachel at Your Dispatch Partner", url:window.location.href };
+            try {
+              if (navigator.share) await navigator.share(shareData);
+              else window.prompt("Copy this link:", window.location.href);
+              navigator.sendBeacon("/rachel/event", new Blob([JSON.stringify({ event_type:"share", source })], {type:"application/json"}));
+            } catch (_) {}
+          });
+        })();
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+app.post("/rachel/event", async (req, res) => {
+  await trackYdpCardEvent(req, req.body.event_type || "client_event", {
+    source: req.body.source,
+    interest: req.body.interest,
+    detail: req.body.detail
+  });
+  res.status(204).end();
+});
+
+app.get("/rachel/contact.vcf", async (req, res) => {
+  const cfg = ydpCardConfig();
+  const source = cleanCardSource(req.query.source);
+  await trackYdpCardEvent(req, "save_contact", { source });
+
+  const vcardLines = [
+    "BEGIN:VCARD",
+    "VERSION:3.0",
+    `FN:${cfg.name.replace(/[\r\n]/g, " ")}`,
+    `N:${cfg.name.split(/\s+/).slice(-1)[0] || ""};${cfg.name.split(/\s+/).slice(0, -1).join(" ")};;;`,
+    `ORG:${cfg.company}`,
+    `TITLE:${cfg.title}`,
+    cfg.phone ? `TEL;TYPE=CELL:${cfg.phone.replace(/[\r\n]/g, " ")}` : "",
+    cfg.email ? `EMAIL;TYPE=INTERNET:${cfg.email.replace(/[\r\n]/g, " ")}` : "",
+    cfg.website ? `URL:${cfg.website}` : "",
+    cfg.linkedin ? `X-SOCIALPROFILE;TYPE=linkedin:${cfg.linkedin}` : "",
+    "END:VCARD"
+  ].filter(Boolean);
+
+  res.setHeader("Content-Type", "text/vcard; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="Rachel-Neal-YDP.vcf"');
+  res.send(vcardLines.join("\r\n"));
+});
+
+app.get("/rachel/go/:action", async (req, res) => {
+  const cfg = ydpCardConfig();
+  const source = cleanCardSource(req.query.source);
+  const targets = {
+    website: cfg.website,
+    linkedin: cfg.linkedin,
+    demo: cfg.demoUrl,
+    book: cfg.bookUrl
+  };
+  const action = String(req.params.action || "").toLowerCase();
+  const target = targets[action];
+  if (!target || !/^https?:\/\//i.test(target)) return res.redirect(`/rachel?source=${encodeURIComponent(source)}`);
+
+  await trackYdpCardEvent(req, `action_${action}`, { source, detail: target });
+  res.redirect(target);
+});
+
+app.post("/rachel/lead", async (req, res) => {
+  try {
+    const name = String(req.body.name || "").trim().slice(0, 160);
+    const businessName = String(req.body.business_name || "").trim().slice(0, 220);
+    const email = String(req.body.email || "").trim().slice(0, 240);
+    const phone = String(req.body.phone || "").trim().slice(0, 100);
+    const interest = cleanCardInterest(req.body.interest) || "not_sure";
+    const source = cleanCardSource(req.body.source);
+    const notes = String(req.body.notes || "").trim().slice(0, 1000);
+    const consent = req.body.consent_follow_up === "1";
+
+    if (!name || !businessName || (!email && !phone) || !consent) {
+      return res.status(400).send("Please provide your name, business, at least one contact method, and consent to follow up.");
+    }
+
+    const result = await pool.query(`
+      INSERT INTO ydp_card_leads (
+        name, business_name, email, phone, interest, source, notes,
+        consent_follow_up, status, created_at, updated_at
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE,'new',NOW(),NOW())
+      RETURNING id
+    `, [name, businessName, email || null, phone || null, interest, source, notes || null]);
+
+    await trackYdpCardEvent(req, "lead_submit", {
+      source,
+      interest,
+      detail: `lead_id=${result.rows[0].id}`
+    });
+
+    res.redirect(`/rachel?thanks=1&source=${encodeURIComponent(source)}&interest=${encodeURIComponent(interest)}#connect`);
+  } catch (error) {
+    console.error("YDP card lead error:", error);
+    res.status(500).send("Sorry, your details could not be saved. Please try again.");
+  }
+});
+
+app.get("/rachel/qr.png", async (req, res) => {
+  try {
+    const source = cleanCardSource(req.query.source || "share");
+    const target = ydpCardPublicUrl(req, source);
+    const qrApi = `https://api.qrserver.com/v1/create-qr-code/?size=720x720&margin=20&data=${encodeURIComponent(target)}`;
+    const response = await fetch(qrApi);
+    if (!response.ok) throw new Error(`QR service returned ${response.status}`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.setHeader("Content-Type", response.headers.get("content-type") || "image/png");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.send(buffer);
+  } catch (error) {
+    console.error("YDP QR generation error:", error);
+    res.status(502).send("QR code could not be generated.");
+  }
+});
+
+app.get("/admin/ydp-leads", async (req, res) => {
+  try {
+    const leads = (await pool.query(`
+      SELECT *
+      FROM ydp_card_leads
+      ORDER BY created_at DESC
+      LIMIT 500
+    `)).rows;
+
+    const sourceStats = (await pool.query(`
+      SELECT source, COUNT(*)::int AS count
+      FROM ydp_card_events
+      WHERE created_at >= NOW() - INTERVAL '90 days'
+      GROUP BY source
+      ORDER BY count DESC, source ASC
+    `)).rows;
+
+    const eventStats = (await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE event_type='page_view')::int AS views,
+        COUNT(*) FILTER (WHERE event_type='save_contact')::int AS saves,
+        COUNT(*) FILTER (WHERE event_type='action_demo')::int AS demos,
+        COUNT(*) FILTER (WHERE event_type='action_book')::int AS bookings,
+        COUNT(*) FILTER (WHERE event_type='lead_submit')::int AS leads
+      FROM ydp_card_events
+      WHERE created_at >= NOW() - INTERVAL '90 days'
+    `)).rows[0] || {};
+
+    const rows = leads.map(lead => `
+      <tr>
+        <td><strong>${escapeHtml(lead.name)}</strong><br><span class="muted">${escapeHtml(lead.business_name || "—")}</span></td>
+        <td>${lead.email ? `<a href="mailto:${escapeHtml(lead.email)}">${escapeHtml(lead.email)}</a><br>` : ""}${lead.phone ? `<a href="tel:${escapeHtml(compactPhone(lead.phone))}">${escapeHtml(lead.phone)}</a>` : ""}</td>
+        <td>${escapeHtml(ydpCardInterestLabel(lead.interest))}</td>
+        <td><span class="pill neutral">${escapeHtml(lead.source || "direct")}</span></td>
+        <td>${escapeHtml(formatDateTime(lead.created_at))}</td>
+        <td>
+          <form method="POST" action="/admin/ydp-leads/${lead.id}/update" style="display:grid;gap:6px;min-width:220px;">
+            <select name="status">
+              ${["new","contacted","demo_booked","proposal","won","lost"].map(status => `<option value="${status}" ${lead.status === status ? "selected" : ""}>${status.replaceAll("_"," ")}</option>`).join("")}
+            </select>
+            <input name="admin_notes" value="${escapeHtml(lead.admin_notes || "")}" placeholder="Admin notes">
+            <button type="submit" class="small-button">Save</button>
+          </form>
+        </td>
+      </tr>
+    `).join("");
+
+    const sourceHtml = sourceStats.length
+      ? sourceStats.map(row => `<span class="pill neutral" style="margin:3px;">${escapeHtml(row.source)} · ${Number(row.count || 0)}</span>`).join("")
+      : `<span class="muted">No scans tracked yet.</span>`;
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>YDP Card Leads</title>
+        <style>${sharedStyles()}</style>
+      </head>
+      <body>
+        ${nav(req)}
+        <h1>YDP Card Leads</h1>
+        <div class="subtitle">Leads and activity from Rachel's digital YDP card.</div>
+
+        <div class="page-actions">
+          <a class="action-button dark" href="/rachel?source=admin-preview" target="_blank">Open digital card</a>
+          <a class="action-button amber" href="/rachel/qr.png?source=badge" target="_blank">Open badge QR</a>
+          <a class="action-button blue" href="/admin/ydp-leads.csv">Export leads CSV</a>
+        </div>
+
+        <div class="grid-4" style="margin-bottom:24px;">
+          <div class="metric-card"><div class="muted">Card views · 90d</div><div class="big-total">${Number(eventStats.views || 0)}</div></div>
+          <div class="metric-card"><div class="muted">Contacts saved · 90d</div><div class="big-total">${Number(eventStats.saves || 0)}</div></div>
+          <div class="metric-card"><div class="muted">Demo clicks · 90d</div><div class="big-total">${Number(eventStats.demos || 0)}</div></div>
+          <div class="metric-card"><div class="muted">Leads captured · 90d</div><div class="big-total">${Number(eventStats.leads || 0)}</div></div>
+        </div>
+
+        <div class="panel">
+          <h2>Traffic sources</h2>
+          <p class="muted">Use different QR source values for badge, business card, Facebook, LinkedIn and events.</p>
+          <div>${sourceHtml}</div>
+        </div>
+
+        <div class="panel">
+          <div style="overflow-x:auto;">
+            <table>
+              <thead><tr><th>Lead</th><th>Contact</th><th>Interest</th><th>Source</th><th>Captured</th><th>Follow-up</th></tr></thead>
+              <tbody>${rows || `<tr><td colspan="6">No YDP card leads yet.</td></tr>`}</tbody>
+            </table>
+          </div>
+        </div>
+      </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error("YDP card admin leads error:", error);
+    res.status(500).send("YDP card leads error. Check Render logs.");
+  }
+});
+
+app.post("/admin/ydp-leads/:id/update", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const allowed = ["new","contacted","demo_booked","proposal","won","lost"];
+    const status = allowed.includes(req.body.status) ? req.body.status : "new";
+    const notes = String(req.body.admin_notes || "").trim().slice(0, 1200);
+    await pool.query(`
+      UPDATE ydp_card_leads
+      SET status=$1, admin_notes=$2, updated_at=NOW()
+      WHERE id=$3
+    `, [status, notes || null, id]);
+    res.redirect("/admin/ydp-leads");
+  } catch (error) {
+    console.error("YDP lead update error:", error);
+    res.status(500).send("Lead update failed.");
+  }
+});
+
+app.get("/admin/ydp-leads.csv", async (req, res) => {
+  try {
+    const rows = (await pool.query(`SELECT * FROM ydp_card_leads ORDER BY created_at DESC`)).rows;
+    const header = ["ID","Name","Business","Email","Phone","Interest","Source","Status","Notes","Admin notes","Created"];
+    const lines = [header.map(csvValue).join(",")];
+    rows.forEach(row => {
+      lines.push([
+        row.id, row.name, row.business_name, row.email, row.phone,
+        ydpCardInterestLabel(row.interest), row.source, row.status,
+        row.notes, row.admin_notes, formatDateTime(row.created_at)
+      ].map(csvValue).join(","));
+    });
+    res.setHeader("Content-Type","text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition",'attachment; filename="ydp-card-leads.csv"');
+    res.send(lines.join("\n"));
+  } catch (error) {
+    console.error("YDP leads CSV error:", error);
+    res.status(500).send("Could not export leads.");
+  }
+});
 
 app.get("/login", async (req, res) => {
   const next = req.query.next || "/start-shift";

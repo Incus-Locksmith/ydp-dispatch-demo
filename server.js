@@ -1,6 +1,6 @@
 // YDP Unified master + clearer technician partial-payment briefing (v165)
 const express = require("express");
-const { pool, sessionMiddleware } = require("./demo-db");
+const { pool, sessionMiddleware, loadedSnapshot, refreshSnapshotClock } = require("./demo-db");
 const fetch = async () => { throw new Error("External services are disabled in this fictional demo."); };
 const PDFDocument = require("pdfkit");
 const path = require("path");
@@ -21206,6 +21206,6 @@ app.get('/demo/forecast',async(req,res)=>{
 
 app.post('/demo/reset',(req,res)=>{res.append('Set-Cookie','ydp_demo_id=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');res.redirect('/jobs');});
 app.get('/demo/technician',async(req,res)=>{const t=(await pool.query('SELECT checkin_token FROM technicians WHERE id=2')).rows[0];res.redirect('/tech-workspace/'+t.checkin_token);});
-const ready=initDb().then(()=>require('./demo-seed')(pool));
+const ready=loadedSnapshot?refreshSnapshotClock():initDb().then(()=>require('./demo-seed')(pool));
 module.exports={app,ready};
 if(require.main===module)ready.then(()=>app.listen(PORT,'0.0.0.0',()=>console.log('Isolated YDP locksmith demo ready on '+PORT))).catch(error=>{console.error('Demo startup:',error.message);process.exit(1);});

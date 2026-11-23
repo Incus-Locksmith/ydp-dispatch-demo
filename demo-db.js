@@ -1,7 +1,20 @@
 // Isolated in-memory PostgreSQL for fictional demo sessions. Never reads DATABASE_URL.
 const {PGlite}=require('@electric-sql/pglite');
 const crypto=require('crypto');
-const db=new PGlite({initialMemory:128*1024*1024});
+const fs=require('fs'),path=require('path');
+const templatePath=path.join(__dirname,'demo-template');
+const loadedSnapshot=process.env.YDP_DEMO_BUILD_SNAPSHOT!=='1'&&fs.existsSync(path.join(templatePath,'PG_VERSION'));
+let runtimeDirectory;
+if(loadedSnapshot){runtimeDirectory=fs.mkdtempSync(path.join(require('os').tmpdir(),'ydp-demo-'));fs.cpSync(templatePath,runtimeDirectory,{recursive:true});}
+const db=new PGlite({initialMemory:128*1024*1024,postgresqlconf:["shared_buffers='4MB'","work_mem='1MB'","maintenance_work_mem='8MB'"],...(loadedSnapshot?{dataDir:runtimeDirectory}:{})});
+async function refreshSnapshotClock(){
+ await db.waitReady;
+ const meta=JSON.parse(fs.readFileSync(path.join(__dirname,'demo-template-meta.json'),'utf8'));
+ const elapsed=Date.now()-Date.parse(meta.generatedAt);
+ if(!Number.isFinite(elapsed))throw new Error('Invalid demo template timestamp');
+ const columns=(await db.query("SELECT table_name,column_name FROM information_schema.columns WHERE table_schema='public' AND data_type IN ('timestamp with time zone','timestamp without time zone')")).rows;
+ for(const {table_name,column_name} of columns){const table='"'+table_name.replaceAll('"','""')+'"',col='"'+column_name.replaceAll('"','""')+'"';await db.query(`UPDATE ${table} SET ${col}=${col}+($1::interval) WHERE ${col} IS NOT NULL`,[elapsed+' milliseconds']);}
+}
 let gate=Promise.resolve();
 const sessions=new Map();
 async function query(sql,params=[]){
@@ -34,4 +47,4 @@ function sessionMiddleware(req,res,next){
   }catch(error){console.error('Demo session error:',error.message);res.status(503).send('The demo is preparing a fresh workspace. Please refresh.');done();}
  })().catch(error=>{release();next(error);});
 }
-module.exports={pool,db,sessionMiddleware};
+module.exports={pool,db,sessionMiddleware,loadedSnapshot,refreshSnapshotClock};

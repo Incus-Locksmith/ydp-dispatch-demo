@@ -10,9 +10,10 @@
   "description": "Isolated fictional-data demo based on Yay-wallboard operational screens",
   "scripts": {
     "start": "node server.js",
-    "test": "node integration.cjs"
+    "test": "node integration.cjs",
+    "postinstall": "node --max-old-space-size=96 prepare-demo-db.cjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": "24.x"
   }
 }

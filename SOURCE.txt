@@ -1,0 +1,3 @@
+Source repository: Incus-Locksmith/yay-wallboard
+Source commit: c0745352dab0ed6a2e24a7f331083cb4fe0c3f77
+Retrieved 18 November 2026. Demo adaptation only; original repository unchanged.
